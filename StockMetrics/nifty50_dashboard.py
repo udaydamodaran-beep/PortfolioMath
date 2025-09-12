@@ -16,6 +16,9 @@ st.set_page_config(page_title="NIFTY50 Explorer", page_icon="📈", layout="wide
 st.title("📊 NIFTY 50 Stock Metrics Dashboard")
 st.markdown("Explore historical returns, volatility, beta and R² of NIFTY 50 stocks vs the NIFTY index.")
 
+# Subtle credit line
+st.markdown("<p style='font-size:0.8em; color:gray;'>Developed by Uday Damodaran for Pedagogical Purposes</p>", unsafe_allow_html=True)
+
 # Metric explanations
 with st.expander("ℹ️ What do these metrics mean?"):
     st.markdown("""
@@ -47,21 +50,14 @@ index_ticker = "^NSEI"  # NIFTY index
 # Helper functions
 # -------------------------------
 def _first_numeric_series(df_or_series):
-    """Return a pandas Series of numeric values from DataFrame or Series.
-    If input is DataFrame, pick the first numeric column. If Series, return as-is.
-    """
     if isinstance(df_or_series, pd.Series):
         return df_or_series
     if isinstance(df_or_series, pd.DataFrame):
-        # prefer 'Close' column if present
         cols = df_or_series.columns
-        # handle MultiIndex columns
         if isinstance(cols, pd.MultiIndex):
-            # try to locate any column whose second level contains 'Close'
             for col in cols:
                 if 'close' in str(col).lower():
                     return df_or_series[col]
-            # fallback: first numeric column
             for col in cols:
                 if pd.api.types.is_numeric_dtype(df_or_series[col]):
                     return df_or_series[col]
@@ -71,14 +67,10 @@ def _first_numeric_series(df_or_series):
             for col in df_or_series.columns:
                 if pd.api.types.is_numeric_dtype(df_or_series[col]):
                     return df_or_series[col]
-    # fallback empty series
     return pd.Series(dtype=float)
 
 
 def get_adj_close(ticker, start):
-    """Download adjusted close series for a ticker and ensure a pandas Series is returned.
-    Handles cases where yfinance returns DataFrame / MultiIndex.
-    """
     data = yf.download(ticker, start=start, progress=False, auto_adjust=True)
     if data is None or (hasattr(data, 'empty') and data.empty):
         return pd.Series(dtype=float)
@@ -86,6 +78,7 @@ def get_adj_close(ticker, start):
 
 
 def to_excel_bytes(df):
+    from io import BytesIO
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
@@ -96,7 +89,6 @@ def compute_metrics():
     today = pd.Timestamp.today().normalize()
     start_5y = today - pd.DateOffset(years=6)
 
-    # Download index and coerce to series
     index_series = get_adj_close(index_ticker, start=start_5y).dropna()
     results = []
 
@@ -107,18 +99,13 @@ def compute_metrics():
             if s.empty:
                 continue
 
-            # daily log returns (series guaranteed)
             r = np.log(s / s.shift(1)).dropna()
             idx_r = np.log(index_series / index_series.shift(1)).dropna()
 
-            # align by index (dates)
             joined = pd.concat([r, idx_r], axis=1, join='inner').dropna()
-
-            # ensure we have exactly two columns (stock, index)
             if joined.shape[1] < 2:
                 raise ValueError("Insufficient overlapping returns with index")
 
-            # pick first two numeric columns as stock and index
             stock_col = joined.columns[0]
             index_col = joined.columns[1]
             joined = joined[[stock_col, index_col]]
@@ -135,27 +122,18 @@ def compute_metrics():
                     return np.nan
                 start_price = series_window.iloc[0]
                 end_price = series.iloc[-1]
-
-                # if start_price / end_price are array-like (rare), pick first element
                 if isinstance(start_price, (pd.Series, np.ndarray)):
                     start_price = np.asarray(start_price).flatten()[0]
                 if isinstance(end_price, (pd.Series, np.ndarray)):
                     end_price = np.asarray(end_price).flatten()[0]
-
-                try:
-                    total_ret = end_price / start_price
-                except Exception:
+                if start_price == 0:
                     return np.nan
-                # protect against zero/invalid
-                if start_price == 0 or pd.isna(total_ret):
-                    return np.nan
-                return float(total_ret**(1/years)-1)
+                return float((end_price / start_price)**(1/years) - 1)
 
             r_1y = ann_return(s, 1)
             r_2y = ann_return(s, 2)
             r_5y = ann_return(s, 5)
 
-            # Beta & R²
             Y = joined['stock']
             X = add_constant(joined['index'])
             model = OLS(Y, X).fit()
@@ -172,12 +150,10 @@ def compute_metrics():
                 "R²": float(r2) if not pd.isna(r2) else np.nan
             })
         except Exception as e:
-            # show warnings in-app so you can see which tickers failed
             st.warning(f"⚠️ Error processing {t}: {e}")
             continue
 
     df = pd.DataFrame(results)
-    # ensure numeric dtypes
     numeric_cols = ["Return 1Y %","Return 2Y %","Return 5Y %","Volatility %","Beta","R²"]
     if not df.empty:
         df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
@@ -191,68 +167,27 @@ with st.spinner("Fetching data & computing metrics... This may take a minute."):
 
 st.success("Data loaded!")
 
-# Sidebar controls
 st.sidebar.header("🔍 Filters")
 search = st.sidebar.text_input("Search ticker (e.g. INFY)")
-
-# Apply search filter
 if search:
     df = df[df['Ticker'].str.contains(search.upper(), na=False)]
 
-# Display dataframe
 if df.empty:
     st.warning("No data available — try rerunning or check your internet connection to Yahoo Finance.")
 else:
     st.dataframe(df.set_index("Ticker"), use_container_width=True)
 
-# -------------------------------
 # Download Buttons
-# -------------------------------
 st.subheader("⬇️ Download Data")
 col1, col2 = st.columns(2)
-
 if not df.empty:
     csv = df.to_csv(index=False).encode('utf-8')
     excel_bytes = to_excel_bytes(df)
-
     with col1:
-        st.download_button(
-            label="📥 Download as CSV",
-            data=csv,
-            file_name="nifty50_metrics.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+        st.download_button("📥 Download as CSV", data=csv, file_name="nifty50_metrics.csv", mime="text/csv", use_container_width=True)
     with col2:
-        st.download_button(
-            label="📊 Download as Excel",
-            data=excel_bytes,
-            file_name="nifty50_metrics.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-else:
-    col1.write("")
-    col2.write("")
+        st.download_button("📊 Download as Excel", data=excel_bytes, file_name="nifty50_metrics.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
-# -------------------------------
 # Plotting section
-# -------------------------------
 st.subheader("📈 Visualize Metrics")
-
-numeric_cols = ["Return 1Y %","Return 2Y %","Return 5Y %","Volatility %","Beta","R²"]
-metric_choice = st.selectbox("Choose metric to plot", numeric_cols)
-
-if not df.empty:
-    fig = px.bar(
-        df.sort_values(metric_choice, ascending=False),
-        x="Ticker", y=metric_choice,
-        title=f"NIFTY50 Stocks - {metric_choice}",
-        color=metric_choice, height=500
-    )
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("No data to plot.")
-
-st.markdown("---")
-st.caption("Built with ❤️ in Streamlit. Data source: Yahoo Finance.")
+numeric_cols = ["Return 1Y %","Return 2Y %","Return 5Y %","Volatility %
